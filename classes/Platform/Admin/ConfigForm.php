@@ -262,7 +262,7 @@ class ConfigForm
             $currentConfig = [
                 'type' => $value['type'] ?? '',
                 'name' => $key,
-                'value' => !empty(\Tools::getValue($key)) ? \Tools::getValue($key) : \Configuration::get($key),
+                'value' => !empty(\Tools::getValue($key)) ? \Tools::getValue($key) : $this->getStoredValue($key, $value),
                 'label' => $value['title'] ?? '',
                 'desc' => $value['description'] ?? '',
                 'class' => $value['class'] ?? '',
@@ -295,7 +295,7 @@ class ConfigForm
                     break;
                 case 'select':
                     $selectQuery = [];
-                    $inputValue = \Tools::getValue($key, \Configuration::get($key));
+                    $inputValue = \Tools::getValue($key, $this->getStoredValue($key, $value));
                     $selectedOptions = is_array($inputValue) ? $inputValue : explode(',', $inputValue);
                     foreach ($value['options'] as $optionKey => $optionValue) {
                         $selectQuery[] = [
@@ -318,6 +318,26 @@ class ConfigForm
         }
 
         return $inputs;
+    }
+
+    /**
+     * Get the stored value of a form field. Fields that were never saved (e.g. settings added
+     * after the module was installed) fall back to their default value.
+     *
+     * @param string $key
+     * @param array $formField
+     *
+     * @return mixed
+     */
+    protected function getStoredValue($key, $formField)
+    {
+        $value = \Configuration::get($key);
+
+        if (false === $value && empty($formField['skipConfigSave']) && isset($formField['default'])) {
+            return is_array($formField['default']) ? implode(',', $formField['default']) : $formField['default'];
+        }
+
+        return $value;
     }
 
     /**

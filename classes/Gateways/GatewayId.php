@@ -25,4 +25,5 @@ abstract class GatewayId
     public const HEARTLAND = 'globalpayments_heartland';
     public const GENIUS = 'globalpayments_genius';
     public const TRANSIT = 'globalpayments_transit';
+    public const ACCESS_WP = 'globalpayments_accesswp';
 }

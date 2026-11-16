@@ -21,6 +21,10 @@
         </div>
         <div class="form-wrapper">
             {foreach from=$formInputs item=input}
+                {if $input['type'] === 'section'}
+                    <h4 class="globalpayments-form-section">{$input['label']|escape:'htmlall':'UTF-8'}</h4>
+                    {continue}
+                {/if}
                 <div class="form-group">
                     <label class="control-label col-lg-3 {$input['class']|escape:'htmlall':'UTF-8'}{if $input['required']} required{/if}">
                         {$input['label']|escape:'htmlall':'UTF-8'}
@@ -38,6 +42,10 @@
                             <button class="btn btn-default" id="{$input['name']|escape:'htmlall':'UTF-8'}">
                                 {$input['title']|escape:'htmlall':'UTF-8'}
                             </button>
+                        {elseif $input['type'] === 'static'}
+                            <p class="form-control-static" id="{$input['name']|escape:'htmlall':'UTF-8'}">
+                                {$input['default']|escape:'htmlall':'UTF-8'}
+                            </p>
                         {elseif $input['type'] === 'select'}
                             {if $input['multiple']=="true"}
                                 <div class="multi-select-wrapper {$input['class']|escape:'htmlall':'UTF-8'}" data-field-id="{$input['name']|escape:'htmlall':'UTF-8'}">

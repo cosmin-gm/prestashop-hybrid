@@ -38,3 +38,14 @@
 .globalpayments-get-transaction-details-information-table tr:not(:last-child){
     margin-bottom: .5rem;
 }
+
+.globalpayments-form-section {
+    margin: 25px 0 15px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #eee;
+    font-weight: 600;
+}
+
+.globalpayments-form-section:first-child {
+    margin-top: 5px;
+}
