@@ -15,6 +15,7 @@
 
 use GlobalPayments\PaymentGatewayProvider\Gateways\{
     AbstractGateway,
+    AccessWpGateway,
     GatewayId,
     GeniusGateway,
     GpApiGateway,
@@ -136,6 +137,7 @@ class GlobalPayments extends PaymentModule
             new GpApiGateway(),
             new TransitGateway(),
             new GeniusGateway(),
+            new AccessWpGateway(),
         ];
 
         $this->paymentMethods = array_merge($this->paymentMethods, GpApiGateway::getPaymentMethods());
