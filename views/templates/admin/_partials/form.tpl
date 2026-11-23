@@ -25,7 +25,7 @@
                     <h4 class="globalpayments-form-section">{$input['label']|escape:'htmlall':'UTF-8'}</h4>
                     {continue}
                 {/if}
-                <div class="form-group">
+                <div class="form-group{if !empty($input['error'])} has-error{/if}">
                     <label class="control-label col-lg-3 {$input['class']|escape:'htmlall':'UTF-8'}{if $input['required']} required{/if}">
                         {$input['label']|escape:'htmlall':'UTF-8'}
                     </label>
@@ -89,6 +89,9 @@
                                     {if $input['required']} required{/if}
                                     {if $input['maxLength']} maxlength="{$input['maxLength']|escape:'htmlall':'UTF-8'}"{/if}
                                     {if !$input['value']} placeholder="{$input['default']|escape:'htmlall':'UTF-8'}"{/if}/>
+                        {/if}
+                        {if !empty($input['error'])}
+                            <p class="help-block text-danger globalpayments-field-error">{$input['error']|escape:'htmlall':'UTF-8'}</p>
                         {/if}
                         <p class="help-block">{$input['desc']|cleanHtml nofilter}</p>
                     </div>

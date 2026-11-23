@@ -16,6 +16,7 @@
 namespace GlobalPayments\PaymentGatewayProvider\Gateways;
 
 use GlobalPayments\Api\Entities\Enums\Environment;
+use GlobalPayments\PaymentGatewayProvider\Platform\Helper\EncryptionHelper;
 use GlobalPayments\PaymentGatewayProvider\Requests\IntegrationType;
 use GlobalPayments\PaymentGatewayProvider\Requests\TransactionType;
 
@@ -35,6 +36,16 @@ class AccessWpGateway extends AbstractGateway
      * URL of the Worldpay Dashboard, where the merchant gets the credentials
      */
     public const DASHBOARD_URL = 'https://dashboard.worldpay.com/';
+
+    /**
+     * Maximum length of the description displayed on the payment page
+     */
+    public const DESCRIPTION_MAX_LENGTH = 128;
+
+    /**
+     * Characters allowed in the merchant narrative
+     */
+    public const NARRATIVE_PATTERN = '/^[A-Za-z0-9\-., ]+$/';
 
     /**
      * Gateway ID
@@ -122,6 +133,7 @@ class AccessWpGateway extends AbstractGateway
     {
         return [
             'env' => $this->isProduction ? parent::ENVIRONMENT_PRODUCTION : parent::ENVIRONMENT_SANDBOX,
+            'canSaveCard' => (bool) $this->allowCardSaving,
         ];
     }
 
@@ -182,6 +194,8 @@ class AccessWpGateway extends AbstractGateway
 
             if ('switch' === $options['type']) {
                 $value = '1' === $value;
+            } elseif (!empty($options['encrypted'])) {
+                $value = EncryptionHelper::decrypt($value);
             }
 
             $this->{$attributeKey} = $value;
@@ -220,13 +234,14 @@ class AccessWpGateway extends AbstractGateway
             $this->id . '_sandboxUsername' => [
                 'title' => $this->translator->trans('Try Username', [], 'Modules.Globalpayments.Admin'),
                 'type' => 'text',
-                'class' => 'sandbox-toggle',
+                'class' => 'required sandbox-toggle',
                 'default' => '',
             ],
             $this->id . '_sandboxPassword' => [
                 'title' => $this->translator->trans('Try Password', [], 'Modules.Globalpayments.Admin'),
                 'type' => 'password',
-                'class' => 'sandbox-toggle',
+                'class' => 'required sandbox-toggle',
+                'encrypted' => true,
                 'description' => $credentialsDescription,
                 'default' => '',
             ],
@@ -242,13 +257,14 @@ class AccessWpGateway extends AbstractGateway
             $this->id . '_username' => [
                 'title' => $this->translator->trans('Live Username', [], 'Modules.Globalpayments.Admin'),
                 'type' => 'text',
-                'class' => 'live-toggle',
+                'class' => 'required live-toggle',
                 'default' => '',
             ],
             $this->id . '_password' => [
                 'title' => $this->translator->trans('Live Password', [], 'Modules.Globalpayments.Admin'),
                 'type' => 'password',
-                'class' => 'live-toggle',
+                'class' => 'required live-toggle',
+                'encrypted' => true,
                 'description' => $credentialsDescription,
                 'default' => '',
             ],
@@ -261,6 +277,126 @@ class AccessWpGateway extends AbstractGateway
                 'options' => $accountNameOptions,
             ],
         ];
+    }
+
+    /**
+     * Get the submitted settings, sanitized and keyed by configuration key.
+     *
+     * Values are trimmed and stripped of NUL bytes. HTML tags are removed from everything but the passwords,
+     * which must be kept exactly as entered. Switches and selects are limited to their known values.
+     *
+     * @return array<string,string>
+     */
+    public function getSanitizedAdminSettings()
+    {
+        $values = [];
+
+        foreach ($this->formFields as $key => $field) {
+            if (!empty($field['skipConfigSave']) || !isset($_POST[$key]) || !is_string($_POST[$key])) {
+                continue;
+            }
+
+            $value = trim(str_replace("\0", '', $_POST[$key]));
+
+            switch ($field['type']) {
+                case 'password':
+                    break;
+                case 'switch':
+                    $value = '1' === $value ? '1' : '0';
+
+                    break;
+                case 'select':
+                    if (!array_key_exists($value, $field['options'])) {
+                        $value = (string) $field['default'];
+                    }
+
+                    break;
+                case 'number':
+                    if (ctype_digit($value)) {
+                        $value = (string) (int) $value;
+                    }
+
+                    break;
+                default:
+                    $value = trim(strip_tags($value));
+            }
+
+            $values[$key] = $value;
+        }
+
+        return $values;
+    }
+
+    /**
+     * Validate the submitted settings.
+     *
+     * @return array<string,string> Error messages, keyed by the configuration key of the invalid field
+     */
+    public function validateAdminSettings()
+    {
+        $values = $this->getSanitizedAdminSettings();
+        $errors = [];
+
+        foreach (['_merchantEntity', '_merchantNarrative', '_title'] as $suffix) {
+            if ('' === ($values[$this->id . $suffix] ?? '')) {
+                $errors[$this->id . $suffix] = $this->getRequiredMessage($suffix);
+            }
+        }
+
+        $narrative = $values[$this->id . '_merchantNarrative'] ?? '';
+        if ('' !== $narrative && !preg_match(self::NARRATIVE_PATTERN, $narrative)) {
+            $errors[$this->id . '_merchantNarrative'] = $this->translator->trans(
+                'Merchant Narrative contains invalid characters. Valid characters are A-Z, a-z, 0-9, hyphens (-), full stops (.), commas (,) and spaces.',
+                [],
+                'Modules.Globalpayments.Admin'
+            );
+        }
+
+        if (\Tools::strlen($values[$this->id . '_merchantDescription'] ?? '') > self::DESCRIPTION_MAX_LENGTH) {
+            $errors[$this->id . '_merchantDescription'] = $this->translator->trans(
+                'Description cannot exceed %max% characters.',
+                ['%max%' => self::DESCRIPTION_MAX_LENGTH],
+                'Modules.Globalpayments.Admin'
+            );
+        }
+
+        if (!ctype_digit($values[$this->id . '_sortOrder'] ?? '')) {
+            $errors[$this->id . '_sortOrder'] = $this->translator->trans(
+                'Sort Order must be a whole number, 0 or greater.',
+                [],
+                'Modules.Globalpayments.Admin'
+            );
+        }
+
+        if ('1' === ($values[$this->id . '_enabled'] ?? '0')) {
+            $isProduction = '1' === ($values[$this->id . '_isProduction'] ?? '0');
+
+            foreach ($isProduction ? ['_username', '_password'] : ['_sandboxUsername', '_sandboxPassword'] as $suffix) {
+                if ('' === ($values[$this->id . $suffix] ?? '')) {
+                    $errors[$this->id . $suffix] = $this->translator->trans(
+                        '%field% is required when the gateway is enabled.',
+                        ['%field%' => $this->formFields[$this->id . $suffix]['title']],
+                        'Modules.Globalpayments.Admin'
+                    );
+                }
+            }
+        }
+
+        return $errors;
+    }
+
+    /**
+     * @param string $suffix The field key, without the gateway id
+     *
+     * @return string
+     */
+    protected function getRequiredMessage($suffix)
+    {
+        return $this->translator->trans(
+            '%field% is required.',
+            ['%field%' => $this->formFields[$this->id . $suffix]['title']],
+            'Modules.Globalpayments.Admin'
+        );
     }
 
     /**
@@ -293,16 +429,33 @@ class AccessWpGateway extends AbstractGateway
             $this->id . '_merchantEntity' => [
                 'title' => $this->translator->trans('Merchant Entity', [], 'Modules.Globalpayments.Admin'),
                 'type' => 'text',
+                'class' => 'required',
+                'description' => $this->translator->trans(
+                    'You can find your entity in your <a href="%url%" target="_blank">Worldpay Dashboard</a>',
+                    ['%url%' => self::DASHBOARD_URL],
+                    'Modules.Globalpayments.Admin'
+                ),
                 'default' => '',
             ],
             $this->id . '_merchantNarrative' => [
                 'title' => $this->translator->trans('Merchant Narrative', [], 'Modules.Globalpayments.Admin'),
                 'type' => 'text',
+                'class' => 'required',
+                'description' => $this->translator->trans(
+                    'Helps your customers better identify you on their website. Valid characters are A-Z, a-z, 0-9. hyphens(-), full stop(.), commas(,) space',
+                    [],
+                    'Modules.Globalpayments.Admin'
+                ),
                 'default' => '',
             ],
             $this->id . '_merchantDescription' => [
-                'title' => $this->translator->trans('Merchant Description', [], 'Modules.Globalpayments.Admin'),
+                'title' => $this->translator->trans('Description', [], 'Modules.Globalpayments.Admin'),
                 'type' => 'text',
+                'description' => $this->translator->trans(
+                    'An optional text, where supplied is displayed to your customer on payment page. Maximum 128 characters.',
+                    [],
+                    'Modules.Globalpayments.Admin'
+                ),
                 'default' => '',
             ],
             $this->id . '_enabled' => [
@@ -313,6 +466,7 @@ class AccessWpGateway extends AbstractGateway
             $this->id . '_title' => [
                 'title' => $this->translator->trans('Title', [], 'Modules.Globalpayments.Admin'),
                 'type' => 'text',
+                'class' => 'required',
                 'description' => $this->translator->trans(
                     'This controls the title which the user sees during checkout.',
                     [],

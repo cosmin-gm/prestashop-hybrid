@@ -17,6 +17,7 @@ namespace GlobalPayments\PaymentGatewayProvider\Platform\Admin;
 
 use GlobalPayments\PaymentGatewayProvider\Gateways\AbstractGateway;
 use GlobalPayments\PaymentGatewayProvider\PaymentMethods\AbstractPaymentMethod;
+use GlobalPayments\PaymentGatewayProvider\Platform\Helper\EncryptionHelper;
 use GlobalPayments\Api\Entities\Enums\ServiceEndpoints;
 use PrestaShopBundle\Translation\TranslatorComponent as Translator;
 
@@ -60,6 +61,20 @@ class ConfigForm
      * @var array
      */
     protected $postErrors = [];
+
+    /**
+     * Validation errors displayed next to their field, keyed by configuration key.
+     *
+     * @var array<string,string>
+     */
+    protected $fieldErrors = [];
+
+    /**
+     * Sanitized values of the submitted form, keyed by configuration key.
+     *
+     * @var array<string,string>
+     */
+    protected $submittedValues = [];
 
     /**
      * @var Translator
@@ -109,11 +124,17 @@ class ConfigForm
         foreach ($this->paymentMethods as $paymentMethod) {
             if (\Tools::isSubmit('submit_' . $paymentMethod->id)) {
                 $this->postErrors = $paymentMethod->validateAdminSettings();
+                if ($this->hasSanitizedSettings($paymentMethod)) {
+                    $this->submittedValues = $paymentMethod->getSanitizedAdminSettings();
+                }
                 if (!count($this->postErrors)) {
                     $this->postProcess($paymentMethod);
                 } else {
-                    foreach ($this->postErrors as $error) {
+                    foreach ($this->postErrors as $key => $error) {
                         $this->html .= $this->module->displayError($error);
+                        if (is_string($key)) {
+                            $this->fieldErrors[$key] = $error;
+                        }
                     }
                 }
             }
@@ -129,6 +150,12 @@ class ConfigForm
      */
     protected function postProcess($paymentMethod)
     {
+        if ($this->hasSanitizedSettings($paymentMethod)) {
+            $this->saveSanitizedSettings($paymentMethod);
+
+            return;
+        }
+
         foreach ($paymentMethod->formFields as $key => $formField) {
             if (isset($formField['multiple']) && $multipleKey = \Tools::getValue($key)) {
                 $_POST[$key] = implode(',', $multipleKey);
@@ -140,6 +167,83 @@ class ConfigForm
 
         $this->html .= $this->displayConfirmationMessage(
             $this->translator->trans('Settings updated', [], 'Modules.Globalpayments.Admin')
+        );
+    }
+
+    /**
+     * States whether the payment method sanitizes its own settings before they are saved.
+     *
+     * @param AbstractGateway|AbstractPaymentMethod $paymentMethod
+     *
+     * @return bool
+     */
+    protected function hasSanitizedSettings($paymentMethod)
+    {
+        return method_exists($paymentMethod, 'getSanitizedAdminSettings');
+    }
+
+    /**
+     * Save the sanitized form data of a payment method. Fields flagged as 'encrypted' are encrypted first.
+     *
+     * @param AbstractGateway|AbstractPaymentMethod $paymentMethod
+     *
+     * @return void
+     */
+    protected function saveSanitizedSettings($paymentMethod)
+    {
+        $values = $paymentMethod->getSanitizedAdminSettings();
+        $secrets = [];
+
+        try {
+            foreach ($values as $key => $value) {
+                if (!empty($paymentMethod->formFields[$key]['encrypted'])) {
+                    $secrets[] = $value;
+                    $value = EncryptionHelper::encrypt($value);
+                }
+                if (!\Configuration::updateValue($key, $value)) {
+                    throw new \PrestaShopException(sprintf('The "%s" setting could not be saved.', $key));
+                }
+            }
+        } catch (\Throwable $e) {
+            $this->logSaveError($paymentMethod, $e, $secrets);
+            $this->html .= $this->module->displayError(
+                $this->translator->trans(
+                    'The settings could not be saved. Please check the logs for details.',
+                    [],
+                    'Modules.Globalpayments.Admin'
+                )
+            );
+
+            return;
+        }
+
+        $this->html .= $this->displayConfirmationMessage(
+            $this->translator->trans('Settings updated', [], 'Modules.Globalpayments.Admin')
+        );
+    }
+
+    /**
+     * Log an error that occurred while saving the settings. Secrets never reach the log.
+     *
+     * @param AbstractGateway|AbstractPaymentMethod $paymentMethod
+     * @param \Throwable $error
+     * @param string[] $secrets
+     *
+     * @return void
+     */
+    protected function logSaveError($paymentMethod, \Throwable $error, array $secrets)
+    {
+        \PrestaShopLogger::addLog(
+            sprintf(
+                'Global Payments: unable to save the %s settings: %s',
+                $paymentMethod->id,
+                EncryptionHelper::mask($error->getMessage(), $secrets)
+            ),
+            3,
+            null,
+            'Module',
+            (int) $this->module->id,
+            true
         );
     }
 
@@ -262,7 +366,8 @@ class ConfigForm
             $currentConfig = [
                 'type' => $value['type'] ?? '',
                 'name' => $key,
-                'value' => !empty(\Tools::getValue($key)) ? \Tools::getValue($key) : $this->getStoredValue($key, $value),
+                'value' => $this->getDisplayedValue($key, $value),
+                'error' => $this->fieldErrors[$key] ?? '',
                 'label' => $value['title'] ?? '',
                 'desc' => $value['description'] ?? '',
                 'class' => $value['class'] ?? '',
@@ -295,7 +400,8 @@ class ConfigForm
                     break;
                 case 'select':
                     $selectQuery = [];
-                    $inputValue = \Tools::getValue($key, $this->getStoredValue($key, $value));
+                    $inputValue = $this->submittedValues[$key]
+                        ?? \Tools::getValue($key, $this->getStoredValue($key, $value));
                     $selectedOptions = is_array($inputValue) ? $inputValue : explode(',', $inputValue);
                     foreach ($value['options'] as $optionKey => $optionValue) {
                         $selectQuery[] = [
@@ -321,6 +427,23 @@ class ConfigForm
     }
 
     /**
+     * Get the value displayed in a form field: what was just submitted, otherwise what is stored.
+     *
+     * @param string $key
+     * @param array $formField
+     *
+     * @return mixed
+     */
+    protected function getDisplayedValue($key, $formField)
+    {
+        if (array_key_exists($key, $this->submittedValues)) {
+            return $this->submittedValues[$key];
+        }
+
+        return !empty(\Tools::getValue($key)) ? \Tools::getValue($key) : $this->getStoredValue($key, $formField);
+    }
+
+    /**
      * Get the stored value of a form field. Fields that were never saved (e.g. settings added
      * after the module was installed) fall back to their default value.
      *
@@ -332,6 +455,10 @@ class ConfigForm
     protected function getStoredValue($key, $formField)
     {
         $value = \Configuration::get($key);
+
+        if (!empty($formField['encrypted'])) {
+            return EncryptionHelper::decrypt($value);
+        }
 
         if (false === $value && empty($formField['skipConfigSave']) && isset($formField['default'])) {
             return is_array($formField['default']) ? implode(',', $formField['default']) : $formField['default'];
